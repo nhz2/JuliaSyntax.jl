@@ -47,6 +47,11 @@ function _source_line_index(source::SourceFile, byte_index)
 end
 _source_line(source::SourceFile, lineidx) = lineidx + source.first_line - 1
 
+function filename(source::SourceFile)
+    f = source.filename
+    !isnothing(f) ? f : ""
+end
+
 """
 Get the line number at the given byte index.
 """
@@ -86,8 +91,7 @@ function source_location(::Type{LineNumberNode}, source::SourceFile, byte_index)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", source::SourceFile)
-    fn = isnothing(source.filename) ? "" : " $(source.filename)"
-    header = "## SourceFile$fn ##"
+    header = "## SourceFile$(filename(source)) ##"
     print(io, header, "\n")
     heightlim = displaysize(io)[1] ÷ 2
     if !get(io, :limit, false) || length(source.line_starts) <= heightlim

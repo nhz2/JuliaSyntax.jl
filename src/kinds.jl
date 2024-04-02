@@ -1,7 +1,138 @@
 # Definition of Kind type - mapping from token string identifiers to
 # enumeration values as used in @K_str
-const _kind_names =
-[
+
+"""
+    K"name"
+    Kind(namestr)
+
+`Kind` is a type tag for specifying the type of tokens and interior nodes of
+a syntax tree. Abstractly, this tag is used to define our own *sum types* for
+syntax tree nodes. We do this explicitly outside the Julia type system because
+(a) Julia doesn't have sum types and (b) we want concrete data structures which
+are unityped from the Julia compiler's point of view, for efficiency.
+
+Naming rules:
+* Kinds which correspond to exactly one textural form are represented with that
+  text. This includes keywords like K"for" and operators like K"*".
+* Kinds which represent many textural forms have UpperCamelCase names. This
+  includes kinds like K"Identifier" and K"Comment".
+* Kinds which exist merely as delimiters are all uppercase
+"""
+primitive type Kind 16 end
+
+# The implementation of Kind here is basically similar to @enum. However we use
+# the K_str macro to self-name these kinds with their literal representation,
+# rather than needing to invent a new name for each.
+
+const _kind_str_to_int = Dict{String,UInt16}()
+const _kind_int_to_str = Dict{UInt16,String}()
+const _kind_modules = Dict{Int,Module}()
+const _kind_nbits = 10
+
+function Kind(x::Integer)
+    if x < 0 || x > typemax(UInt16)
+        throw(ArgumentError("Kind out of range: $x"))
+    end
+    return Base.bitcast(Kind, convert(UInt16, x))
+end
+
+function Base.convert(::Type{String}, k::Kind)
+    _kind_int_to_str[reinterpret(UInt16, k)]
+end
+
+function Base.convert(::Type{Kind}, s::AbstractString)
+    i = get(_kind_str_to_int, s) do
+        error("unknown Kind name $(repr(s))")
+    end
+    Kind(i)
+end
+
+Base.string(x::Kind) = convert(String, x)
+Base.print(io::IO, x::Kind) = print(io, convert(String, x))
+
+Base.:<(x::Kind, y::Kind) = reinterpret(UInt16, x) < reinterpret(UInt16, y)
+
+function Base.show(io::IO, k::Kind)
+    print(io, "K\"$(convert(String, k))\"")
+end
+
+function Base.parentmodule(k::Kind)
+    mod_id = reinterpret(UInt16, k) >> _kind_nbits
+    _kind_modules[mod_id]
+end
+
+function _insert_kinds!(kind_modules, int_to_kindstr, kind_str_to_int, mod, module_id, names)
+    if get!(kind_modules, module_id, mod) != mod
+        error("Kind module ID $module_id already claimed by module $(kind_modules[module_id])")
+    end
+    # Process names to conflate category BEGIN/END markers with the first/last
+    # in the category.
+    i = 0
+    for name in names
+        normal_kind = false
+        if startswith(name, "BEGIN_")
+            j = i
+        elseif startswith(name, "END_")
+            j = i - 1
+        else
+            normal_kind = true
+            j = i
+            i += 1
+        end
+        if j >= (1 << _kind_nbits)
+            error("Too many kind names")
+        end
+        kind_int = (module_id << _kind_nbits) | j
+        push!(kind_str_to_int, name=>kind_int)
+        if normal_kind
+            push!(int_to_kindstr, kind_int=>name)
+        end
+    end
+end
+
+function insert_kinds!(mod, module_id, names)
+    _insert_kinds!(_kind_modules, _kind_int_to_str, _kind_str_to_int, mod, module_id, names)
+end
+
+#-------------------------------------------------------------------------------
+
+"""
+    K"s"
+
+The kind of a token or AST internal node with string "s".
+
+For example
+* K")" is the kind of the right parenthesis token
+* K"block" is the kind of a block of code (eg, statements within a begin-end).
+"""
+macro K_str(s)
+    convert(Kind, s)
+end
+
+"""
+A set of kinds which can be used with the `in` operator.  For example
+
+    k in KSet"+ - *"
+"""
+macro KSet_str(str)
+    kinds = [convert(Kind, s) for s in split(str)]
+
+    quote
+        ($(kinds...),)
+    end
+end
+
+"""
+    kind(x)
+
+Return the `Kind` of `x`.
+"""
+kind(k::Kind) = k
+
+
+#-------------------------------------------------------------------------------
+# Kinds used by JuliaSyntax
+insert_kinds!(JuliaSyntax, 0, [
     "None"         # Placeholder; never emitted by lexer
     "EndMarker"    # EOF
     "Comment"
@@ -918,121 +1049,7 @@ const _kind_names =
         # Container for a single statement/atom plus any trivia and errors
         "wrapper"
     "END_SYNTAX_KINDS"
-]
-
-"""
-    K"name"
-    Kind(namestr)
-
-`Kind` is a type tag for specifying the type of tokens and interior nodes of
-a syntax tree. Abstractly, this tag is used to define our own *sum types* for
-syntax tree nodes. We do this explicitly outside the Julia type system because
-(a) Julia doesn't have sum types and (b) we want concrete data structures which
-are unityped from the Julia compiler's point of view, for efficiency.
-
-Naming rules:
-* Kinds which correspond to exactly one textural form are represented with that
-  text. This includes keywords like K"for" and operators like K"*".
-* Kinds which represent many textural forms have UpperCamelCase names. This
-  includes kinds like K"Identifier" and K"Comment".
-* Kinds which exist merely as delimiters are all uppercase
-"""
-primitive type Kind 16 end
-
-# The implementation of Kind here is basically similar to @enum. However we use
-# the K_str macro to self-name these kinds with their literal representation,
-# rather than needing to invent a new name for each.
-
-let kind_int_type = :UInt16
-    # Preprocess _kind_names to conflate category markers with the first/last
-    # in the category.
-    kindstr_to_int = Dict{String,UInt16}()
-    i = 1
-    while i <= length(_kind_names)
-        kn = _kind_names[i]
-        kind_int = i-1
-        if startswith(kn, "BEGIN_")
-            deleteat!(_kind_names, i)
-        elseif startswith(kn, "END_")
-            kind_int = i-2
-            deleteat!(_kind_names, i)
-        else
-            i += 1
-        end
-        push!(kindstr_to_int, kn=>kind_int)
-    end
-
-    max_kind_int = length(_kind_names)-1
-
-    @eval begin
-        function Kind(x::Integer)
-            if x < 0 || x > $max_kind_int
-                throw(ArgumentError("Kind out of range: $x"))
-            end
-            return Base.bitcast(Kind, convert($kind_int_type, x))
-        end
-
-        Base.convert(::Type{String}, k::Kind) = _kind_names[1 + reinterpret($kind_int_type, k)]
-
-        let kindstr_to_int=$kindstr_to_int
-            function Base.convert(::Type{Kind}, s::AbstractString)
-                i = get(kindstr_to_int, s) do
-                    error("unknown Kind name $(repr(s))")
-                end
-                Kind(i)
-            end
-        end
-
-        Base.string(x::Kind) = convert(String, x)
-        Base.print(io::IO, x::Kind) = print(io, convert(String, x))
-
-        Base.typemin(::Type{Kind}) = Kind(0)
-        Base.typemax(::Type{Kind}) = Kind($max_kind_int)
-
-        Base.:<(x::Kind, y::Kind) = reinterpret($kind_int_type, x) < reinterpret($kind_int_type, y)
-
-        Base.instances(::Type{Kind}) = (Kind(i) for i in reinterpret($kind_int_type, typemin(Kind)):reinterpret($kind_int_type, typemax(Kind)))
-    end
-end
-
-function Base.show(io::IO, k::Kind)
-    print(io, "K\"$(convert(String, k))\"")
-end
-
-#-------------------------------------------------------------------------------
-
-"""
-    K"s"
-
-The kind of a token or AST internal node with string "s".
-
-For example
-* K")" is the kind of the right parenthesis token
-* K"block" is the kind of a block of code (eg, statements within a begin-end).
-"""
-macro K_str(s)
-    convert(Kind, s)
-end
-
-"""
-A set of kinds which can be used with the `in` operator.  For example
-
-    k in KSet"+ - *"
-"""
-macro KSet_str(str)
-    kinds = [convert(Kind, s) for s in split(str)]
-
-    quote
-        ($(kinds...),)
-    end
-end
-
-"""
-    kind(x)
-
-Return the `Kind` of `x`.
-"""
-kind(k::Kind) = k
+])
 
 #-------------------------------------------------------------------------------
 const _nonunique_kind_names = Set([

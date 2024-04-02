@@ -97,6 +97,7 @@ end
 
 haschildren(node::TreeNode) = node.children !== nothing
 children(node::TreeNode) = (c = node.children; return c === nothing ? () : c)
+numchildren(node::TreeNode) = (isnothing(node.children) ? 0 : length(node.children))
 
 
 """
@@ -127,6 +128,10 @@ end
 
 source_line(node::AbstractSyntaxNode) = source_line(node.source, node.position)
 source_location(node::AbstractSyntaxNode) = source_location(node.source, node.position)
+function filename(node::AbstractSyntaxNode)
+    isnothing(node.source) ? "" : filename(node.source)
+end
+
 
 function interpolate_literal(node::SyntaxNode, val)
     @assert kind(node) == K"$"
@@ -135,8 +140,8 @@ end
 
 function _show_syntax_node(io, current_filename, node::AbstractSyntaxNode,
                            indent, show_byte_offsets)
-    fname = node.source.filename
-    line, col = source_location(node.source, node.position)
+    fname = filename(node)
+    line, col = source_location(node)
     posstr = "$(lpad(line, 4)):$(rpad(col,3))│"
     if show_byte_offsets
         posstr *= "$(lpad(first_byte(node),6)):$(rpad(last_byte(node),6))│"
